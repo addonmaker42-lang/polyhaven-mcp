@@ -1,1 +1,1 @@
-Poly Haven MCP - Cloudflare Workers Edition
+Poly Haven MCP V2 - Cloudflare Workers Edition
