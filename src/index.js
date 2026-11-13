@@ -2,18 +2,55 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
+// FORMAT DIMENSIONS
+function roundDimensions(value) {
+  if (typeof value === "number") {
+    return Number(value.toFixed(2));
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(roundDimensions);
+  }
+
+  if (value && typeof value === "object") {
+    const result = {};
+
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = roundDimensions(item);
+    }
+
+    return result;
+  }
+
+  return value;
+}
+
+// FORMAT UNIX TIMESTAMP
+function formatDate(timestamp) {
+  if (!timestamp) return null;
+
+  const date = new Date(timestamp * 1000);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+// CREATE MCP SERVER
 function createServer() {
   const server = new McpServer({
     name: "polyhaven-mcp",
     version: "1.0.0"
   });
 
-  // CONNECTION TEST
+  // TEST CONNECTION
   server.registerTool(
     "test_connection",
     {
-      description: "Test the Poly Haven MCP connection.",
-      inputSchema: z.object({})
+      description: "Check whether the Poly Haven MCP server is online.",
+      inputSchema: {}
     },
     async () => ({
       content: [{
@@ -28,36 +65,17 @@ function createServer() {
     "search_assets",
     {
       description:
-        "Search 3D models in the Poly Haven library using natural language. Returns matching asset names, descriptions, categories, thumbnails and relevance scores.",
-      inputSchema: z.object({
-        query: z.string()
-          .trim()
-          .min(1)
-          .max(100)
-          .describe("What 3D model to search for"),
-
-        limit: z.number()
-          .int()
-          .min(1)
-          .max(10)
-          .default(5)
-          .describe("Maximum number of results")
-      })
+        "Search for 3D models and other assets in the Poly Haven library.",
+      inputSchema: {
+        query: z.string().trim().min(1).max(100),
+        limit: z.number().int().min(1).max(20).default(5)
+      }
     },
     async ({ query, limit }) => {
-      const searchUrl = new URL(
-        "https://api.polyhaven.com/search"
-      );
+      const url =
+        `https://api.polyhaven.com/search?q=${encodeURIComponent(query)}&t=models&limit=${limit}`;
 
-      searchUrl.searchParams.set(
-        "q",
-        query.trim().toLowerCase()
-      );
-
-      searchUrl.searchParams.set("t", "models");
-      searchUrl.searchParams.set("limit", String(limit));
-
-      const response = await fetch(searchUrl.toString(), {
+      const response = await fetch(url, {
         headers: {
           "Accept": "application/json",
           "User-Agent": "PolyHavenMCP/1.0"
@@ -72,48 +90,47 @@ function createServer() {
 
       const data = await response.json();
 
-      if (!data.results || data.results.length === 0) {
-        return {
-          content: [{
-            type: "text",
-            text: `No 3D models found for: ${query}`
-          }]
-        };
-      }
+      const entries = Array.isArray(data)
+        ? data
+        : Object.entries(data).map(([slug, item]) => ({
+            slug,
+            ...(typeof item === "object" ? item : {
+              score: item
+            })
+          }));
+
+      entries.sort(
+        (a, b) => (b.score || 0) - (a.score || 0)
+      );
 
       const results = await Promise.all(
-        data.results.slice(0, limit).map(async (item) => {
+        entries.slice(0, limit).map(async (item) => {
+          const assetId = item.slug || item.id;
+
           try {
             const infoResponse = await fetch(
-              `https://api.polyhaven.com/info/${encodeURIComponent(item.slug)}`
+              `https://api.polyhaven.com/info/${encodeURIComponent(assetId)}`
             );
 
-            if (!infoResponse.ok) {
-              return {
-                id: item.slug,
-                score: item.score,
-                name: item.slug,
-                error: "Metadata unavailable"
-              };
-            }
-
-            const info = await infoResponse.json();
+            const info = infoResponse.ok
+              ? await infoResponse.json()
+              : {};
 
             return {
-              id: item.slug,
-              name: info.name || item.slug,
+              id: assetId,
+              name: info.name || assetId,
               description: info.description || "",
               category: info.category || "",
-              thumbnail: info.thumbnail_url || "",
-              score: item.score,
-              source: "Poly Haven"
+              thumbnail_url: info.thumbnail_url || "",
+              score: item.score || 0,
+              url: `https://polyhaven.com/a/${assetId}`
             };
           } catch {
             return {
-              id: item.slug,
-              name: item.slug,
-              score: item.score,
-              error: "Could not retrieve metadata"
+              id: assetId,
+              name: assetId,
+              score: item.score || 0,
+              url: `https://polyhaven.com/a/${assetId}`
             };
           }
         })
@@ -124,11 +141,9 @@ function createServer() {
           type: "text",
           text: JSON.stringify({
             source: "Poly Haven",
-            credit: "Powered by Poly Haven",
-            query: query,
-            total: data.total,
-            returned: results.length,
-            results: results
+            query,
+            total_results: entries.length,
+            results
           }, null, 2)
         }]
       };
@@ -141,25 +156,25 @@ function createServer() {
     {
       description:
         "Get detailed information about a Poly Haven asset using its asset ID.",
-      inputSchema: z.object({
+      inputSchema: {
         asset_id: z.string()
           .trim()
           .min(1)
           .max(100)
           .regex(/^[a-zA-Z0-9_-]+$/)
           .describe("The asset ID returned by search_assets")
-      })
+      }
     },
     async ({ asset_id }) => {
-      const url =
-        `https://api.polyhaven.com/info/${encodeURIComponent(asset_id)}`;
-
-      const response = await fetch(url, {
-        headers: {
-          "Accept": "application/json",
-          "User-Agent": "PolyHavenMCP/1.0"
+      const response = await fetch(
+        `https://api.polyhaven.com/info/${encodeURIComponent(asset_id)}`,
+        {
+          headers: {
+            "Accept": "application/json",
+            "User-Agent": "PolyHavenMCP/1.0"
+          }
         }
-      });
+      );
 
       if (response.status === 404) {
         return {
@@ -179,21 +194,28 @@ function createServer() {
 
       const info = await response.json();
 
+      const dimensions = info.dimensions
+        ? {
+            unit: "meters",
+            values: roundDimensions(info.dimensions)
+          }
+        : null;
+
       const result = {
         source: "Poly Haven",
         asset_id,
         name: info.name || asset_id,
         description: info.description || "",
-        type: info.type,
+        type: info.type || "",
         category: info.category || "",
         tags: info.tags || [],
         thumbnail: info.thumbnail_url || "",
         authors: info.authors || {},
         download_count: info.download_count ?? 0,
-        date_published: info.date_published ?? null,
+        date_published: formatDate(info.date_published),
         max_resolution: info.max_resolution || null,
         attributes: info.attributes || {},
-        dimensions: info.dimensions || null,
+        dimensions,
         polyhaven_url: `https://polyhaven.com/a/${asset_id}`
       };
 
@@ -205,10 +227,11 @@ function createServer() {
       };
     }
   );
-  
+
   return server;
 }
 
+// MCP HANDLER
 const handler = createMcpHandler(createServer);
 
 export default {
