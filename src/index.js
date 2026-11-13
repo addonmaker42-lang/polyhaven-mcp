@@ -1,7 +1,66 @@
-
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
+
+// FLATTEN POLY HAVEN FILE TREE
+function flattenFiles(node, path = [], isDependency = false, results = []) {
+  if (!node || typeof node !== "object") {
+    return results;
+  }
+
+  if (typeof node.url === "string") {
+    const filePath = path.join("/");
+    const size = Number.isFinite(node.size) ? node.size : null;
+
+    const resolution = path.find(
+      part => /^\d+k(\+)?$/i.test(part)
+    ) || null;
+
+    results.push({
+      path: filePath || "file",
+      format: path[path.length - 1] || null,
+      resolution,
+      url: node.url,
+      size_bytes: size,
+      size_mb: size !== null
+        ? Number((size / 1024 / 1024).toFixed(2))
+        : null,
+      md5: node.md5 || null,
+      is_dependency: isDependency
+    });
+
+    if (node.include && typeof node.include === "object") {
+      flattenFiles(
+        node.include,
+        [...path, "dependencies"],
+        true,
+        results
+      );
+    }
+
+    return results;
+  }
+
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "include") {
+      flattenFiles(
+        value,
+        [...path, "dependencies"],
+        true,
+        results
+      );
+    } else {
+      flattenFiles(
+        value,
+        [...path, key],
+        isDependency,
+        results
+      );
+    }
+  }
+
+  return results;
+}
 
 function createServer() {
   const server = new McpServer({
@@ -186,16 +245,18 @@ function createServer() {
             .toISOString()
             .slice(0, 10)
         : null;
-      
+
       // FORMAT DIMENSIONS
-      const formattedDimensions = Array.isArray(info.dimensions)
-        ? {
-            x: Number(info.dimensions[0].toFixed(2)),
-            y: Number(info.dimensions[1].toFixed(2)),
-            z: Number(info.dimensions[2].toFixed(2)),
-            unit: "millimeter"
-          }
-        : null;
+      const formattedDimensions =
+        Array.isArray(info.dimensions) &&
+        info.dimensions.length >= 3
+          ? {
+              x: Number(info.dimensions[0].toFixed(2)),
+              y: Number(info.dimensions[1].toFixed(2)),
+              z: Number(info.dimensions[2].toFixed(2)),
+              unit: "millimeter"
+            }
+          : null;
 
       const result = {
         source: "Poly Haven",
@@ -213,6 +274,70 @@ function createServer() {
         attributes: info.attributes || {},
         dimensions: formattedDimensions,
         polyhaven_url: `https://polyhaven.com/a/${asset_id}`
+      };
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // GET ASSET FILES
+  server.registerTool(
+    "get_asset_files",
+    {
+      description:
+        "Get all available downloadable files for a Poly Haven asset. Returns file formats, resolutions, direct download URLs, file sizes, MD5 checksums, and dependencies when available.",
+      inputSchema: z.object({
+        asset_id: z.string()
+          .trim()
+          .min(1)
+          .max(100)
+          .regex(/^[a-zA-Z0-9_-]+$/)
+          .describe("The asset ID returned by search_assets")
+      })
+    },
+    async ({ asset_id }) => {
+      const url =
+        `https://api.polyhaven.com/files/${encodeURIComponent(asset_id)}`;
+
+      const response = await fetch(url, {
+        headers: {
+          "Accept": "application/json",
+          "User-Agent": "PolyHavenMCP/1.0"
+        }
+      });
+
+      if (response.status === 404) {
+        return {
+          content: [{
+            type: "text",
+            text: `Files not found for asset: ${asset_id}`
+          }],
+          isError: true
+        };
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `Poly Haven API error: HTTP ${response.status}`
+        );
+      }
+
+      const fileData = await response.json();
+
+      const files = flattenFiles(fileData);
+
+      const result = {
+        source: "Poly Haven",
+        credit: "Powered by Poly Haven",
+        asset_id,
+        asset_url: `https://polyhaven.com/a/${asset_id}`,
+        total_files: files.length,
+        files: files
       };
 
       return {
