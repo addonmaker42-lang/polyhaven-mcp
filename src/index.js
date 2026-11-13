@@ -135,6 +135,77 @@ function createServer() {
     }
   );
 
+  // GET ASSET INFO
+  server.registerTool(
+    "get_asset_info",
+    {
+      description:
+        "Get detailed information about a Poly Haven asset using its asset ID.",
+      inputSchema: z.object({
+        asset_id: z.string()
+          .trim()
+          .min(1)
+          .max(100)
+          .regex(/^[a-zA-Z0-9_-]+$/)
+          .describe("The asset ID returned by search_assets")
+      })
+    },
+    async ({ asset_id }) => {
+      const url =
+        `https://api.polyhaven.com/info/${encodeURIComponent(asset_id)}`;
+
+      const response = await fetch(url, {
+        headers: {
+          "Accept": "application/json",
+          "User-Agent": "PolyHavenMCP/1.0"
+        }
+      });
+
+      if (response.status === 404) {
+        return {
+          content: [{
+            type: "text",
+            text: `Asset not found: ${asset_id}`
+          }],
+          isError: true
+        };
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `Poly Haven API error: HTTP ${response.status}`
+        );
+      }
+
+      const info = await response.json();
+
+      const result = {
+        source: "Poly Haven",
+        asset_id,
+        name: info.name || asset_id,
+        description: info.description || "",
+        type: info.type,
+        category: info.category || "",
+        tags: info.tags || [],
+        thumbnail: info.thumbnail_url || "",
+        authors: info.authors || {},
+        download_count: info.download_count ?? 0,
+        date_published: info.date_published ?? null,
+        max_resolution: info.max_resolution || null,
+        attributes: info.attributes || {},
+        dimensions: info.dimensions || null,
+        polyhaven_url: `https://polyhaven.com/a/${asset_id}`
+      };
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+  
   return server;
 }
 
