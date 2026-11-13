@@ -1,0 +1,17 @@
+{
+  "name": "polyhaven-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "agents": "latest",
+    "@modelcontextprotocol/server": "2.3.1",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}
