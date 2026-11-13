@@ -186,21 +186,14 @@ function createServer() {
             .toISOString()
             .slice(0, 10)
         : null;
-
+      
       // FORMAT DIMENSIONS
-      const formattedDimensions = info.dimensions
+      const formattedDimensions = Array.isArray(info.dimensions)
         ? {
-            unit: "millimeter",
-            ...Object.fromEntries(
-              Object.entries(info.dimensions).map(
-                ([key, value]) => [
-                  key,
-                  typeof value === "number"
-                    ? Number(value.toFixed(2))
-                    : value
-                ]
-              )
-            )
+            x: Number(info.dimensions[0].toFixed(2)),
+            y: Number(info.dimensions[1].toFixed(2)),
+            z: Number(info.dimensions[2].toFixed(2)),
+            unit: "millimeter"
           }
         : null;
 
